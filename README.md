@@ -1,6 +1,6 @@
 # File Automator
 
-[![tests](https://github.com/rm9v27j9jv-collab/file-automator/actions/workflows/tests.yml/badge.svg)](https://github.com/rm9v27j9jv-collab/file-automator/actions/workflows/tests.yml)
+[![tests](https://github.com/Hunter-Ryan-Bryant/file-automator/actions/workflows/tests.yml/badge.svg)](https://github.com/Hunter-Ryan-Bryant/file-automator/actions/workflows/tests.yml)
 
 A Python command-line tool that tidies a messy folder (your Downloads folder by default) by sorting files into category folders based on their extension.
 
@@ -29,7 +29,7 @@ Downloads/                    Downloads/
 ## Getting Started
 
 ```bash
-git clone https://github.com/rm9v27j9jv-collab/file-automator.git
+git clone https://github.com/Hunter-Ryan-Bryant/file-automator.git
 cd file-automator
 ```
 
