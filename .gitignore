@@ -16,4 +16,4 @@ Thumbs.db
 
 # IDE Specific Settings
 .vscode/
-.idea/
+.idea/.pytest_cache/
