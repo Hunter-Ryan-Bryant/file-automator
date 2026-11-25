@@ -84,3 +84,21 @@ def test_failed_move_is_counted_not_raised(tmp_path, monkeypatch):
 
     assert summary["failed"] == 1
     assert (tmp_path / "locked.txt").exists()
+
+
+def test_cli_expands_tilde_in_path(tmp_path, monkeypatch):
+    """--path "~/folder" works even when the shell doesn't expand the ~ (e.g. when quoted)."""
+    import sys
+    import main as cli
+
+    home = tmp_path / "home"
+    target = home / "clutter"
+    target.mkdir(parents=True)
+    (target / "photo.png").write_text("img")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", "~/clutter", "--log-file", str(tmp_path / "run.log")])
+
+    cli.main()
+
+    assert (target / "Images" / "photo.png").exists()

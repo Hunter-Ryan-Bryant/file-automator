@@ -117,7 +117,7 @@ def main():
     log_file = Path(args.log_file)
     setup_logging(log_file)
     # Never sort our own log file if it lives inside the target folder.
-    organize_directory(Path(args.path), dry_run=args.dry_run, skip=frozenset({log_file.resolve()}))
+    organize_directory(Path(args.path).expanduser(), dry_run=args.dry_run, skip=frozenset({log_file.resolve()}))
 
 
 if __name__ == "__main__":
