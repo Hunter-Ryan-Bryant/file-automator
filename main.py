@@ -82,44 +82,104 @@ def save_history(target_dir: Path, runs: list[dict]) -> None:
         logger.warning(f"Could not update undo history {history_file.name}: {error}")
 
 
-def organize_directory(target_dir: Path, dry_run: bool = False, skip: frozenset = frozenset()) -> dict:
-    """Sort the files directly inside target_dir into category folders.
+def collect_files(target_dir: Path, recursive: bool, skip: frozenset, summary: dict) -> list[Path]:
+    """List the files to organize, counting anything left alone in summary["skipped"].
 
+    With recursive=True, sub-folders are searched too, except hidden folders,
+    symlinked folders and the top-level category folders (already sorted).
+    """
+    category_names = {name.lower() for name in DIRECTORIES} | {OTHER_CATEGORY.lower()}
+    files = []
+
+    def visit(folder: Path, is_top: bool) -> None:
+        try:
+            items = sorted(folder.iterdir())
+        except OSError as error:
+            logger.warning(f"Could not read folder {folder}: {error}")
+            summary["skipped"] += 1
+            return
+        for item in items:
+            descend = (
+                recursive
+                and item.is_dir()
+                and not item.is_symlink()
+                and not item.name.startswith(".")
+                and not (is_top and item.name.lower() in category_names)
+            )
+            if descend:
+                visit(item, is_top=False)
+            elif should_skip(item, skip):
+                summary["skipped"] += 1
+            else:
+                files.append(item)
+
+    visit(target_dir, is_top=True)
+    return files
+
+
+def remove_emptied_folders(target_dir: Path, moved_files: list[Path]) -> None:
+    """Delete sub-folders that are empty now because we moved files out of them."""
+    folders = set()
+    for file in moved_files:
+        parent = file.parent
+        while parent != target_dir and target_dir in parent.parents:
+            folders.add(parent)
+            parent = parent.parent
+    # Deepest first, so a parent can be removed once its children are gone.
+    for folder in sorted(folders, key=lambda p: len(p.parts), reverse=True):
+        try:
+            if folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
+                logger.info(f"Removed empty folder: {folder.relative_to(target_dir).as_posix()}/")
+        except OSError:
+            pass
+
+
+def organize_directory(
+    target_dir: Path, dry_run: bool = False, skip: frozenset = frozenset(), recursive: bool = False
+) -> dict:
+    """Sort the files inside target_dir into category folders.
+
+    With recursive=True, files in sub-folders are gathered into the top-level
+    category folders too, and sub-folders left empty are removed.
     Returns a summary: {"moved": int, "skipped": int, "failed": int}.
     With dry_run=True nothing is moved; planned moves are only logged.
     Real moves are recorded in HISTORY_FILENAME so they can be undone.
     """
     summary = {"moved": 0, "skipped": 0, "failed": 0}
-    moves = []  # [{"src": "photo.png", "dest": "Images/photo.png"}, ...], relative to target_dir
+    moves = []  # [{"src": "trip/photo.png", "dest": "Images/photo.png"}, ...], relative to target_dir
+    moved_files = []
 
     if not target_dir.exists() or not target_dir.is_dir():
         logger.error(f"Target directory does not exist or is invalid: {target_dir}")
         return summary
 
-    logger.info(f"Starting organization for: {target_dir}" + (" (dry run)" if dry_run else ""))
+    mode = " (recursive)" if recursive else ""
+    logger.info(f"Starting organization for: {target_dir}{mode}" + (" (dry run)" if dry_run else ""))
 
-    # Snapshot the listing first so files we create or move don't affect the loop.
-    for item in sorted(target_dir.iterdir()):
-        if should_skip(item, skip):
-            summary["skipped"] += 1
-            continue
-
+    # Collect everything first so files we create or move don't affect the loop.
+    for item in collect_files(target_dir, recursive, skip, summary):
         category = get_category(item)
         dest_folder = target_dir / category
+        rel = item.relative_to(target_dir).as_posix()
 
         try:
             dest_path = unique_destination(dest_folder, item.name)
             if dry_run:
-                logger.info(f"[dry run] Would move: {item.name} -> {category}/{dest_path.name}")
+                logger.info(f"[dry run] Would move: {rel} -> {category}/{dest_path.name}")
             else:
                 dest_folder.mkdir(exist_ok=True)
                 shutil.move(str(item), str(dest_path))
-                logger.info(f"Moved: {item.name} -> {category}/{dest_path.name}")
-                moves.append({"src": item.name, "dest": f"{category}/{dest_path.name}"})
+                logger.info(f"Moved: {rel} -> {category}/{dest_path.name}")
+                moves.append({"src": rel, "dest": f"{category}/{dest_path.name}"})
+                moved_files.append(item)
             summary["moved"] += 1
         except (PermissionError, OSError) as error:
-            logger.warning(f"Could not move {item.name}: {error}")
+            logger.warning(f"Could not move {rel}: {error}")
             summary["failed"] += 1
+
+    if moved_files:
+        remove_emptied_folders(target_dir, moved_files)
 
     if moves:
         runs = load_history(target_dir)
@@ -177,6 +237,8 @@ def undo_last_run(target_dir: Path, dry_run: bool = False) -> dict:
             continue
 
         try:
+            # Recreate the sub-folder if a recursive run removed it.
+            original.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(current), str(original))
             logger.info(f"Restored: {move['dest']} -> {move['src']}")
             summary["restored"] += 1
@@ -234,6 +296,11 @@ def main() -> int:
         help="Show what would be moved without moving anything",
     )
     parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="Also gather files from sub-folders into the top-level category folders",
+    )
+    parser.add_argument(
         "--undo",
         action="store_true",
         help="Move files from the most recent run back to where they were",
@@ -253,7 +320,12 @@ def main() -> int:
         summary = undo_last_run(target_dir, dry_run=args.dry_run)
     else:
         # Never sort our own log file if it lives inside the target folder.
-        summary = organize_directory(target_dir, dry_run=args.dry_run, skip=frozenset({log_file.resolve()}))
+        summary = organize_directory(
+            target_dir,
+            dry_run=args.dry_run,
+            skip=frozenset({log_file.resolve()}),
+            recursive=args.recursive,
+        )
 
     if not target_dir.is_dir() or summary["failed"]:
         return 1

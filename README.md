@@ -18,6 +18,7 @@ Downloads/                    Downloads/
 - **No overwrites:** if a file with the same name already exists, the new one is saved as `name_1.ext`, `name_2.ext`, and so on.
 - **Error handling:** locked files or permission errors are logged and counted; the run keeps going instead of crashing.
 - **Dry run:** `--dry-run` shows exactly what would move without touching anything.
+- **Recursive mode:** `--recursive` also gathers files from sub-folders into the top-level category folders, then removes sub-folders left empty. Existing category folders, hidden folders (like `.git`) and symlinked folders are never searched.
 - **Undo:** `--undo` moves the files from the most recent run back where they were. Run it again to step back further. It never overwrites a file, and it removes category folders that end up empty.
 - **Audit log:** every move, skip and failure is written to the console and to `file_automator.log`.
 - **Safe by default:** hidden files, sub-folders, the tool's own log file and in-progress downloads (`.crdownload`, `.part`, `.tmp`, ...) are never moved.
@@ -46,6 +47,10 @@ python main.py --dry-run
 # Organize a specific folder
 python main.py --path "C:/Users/me/Desktop/clutter"
 
+# Also pull files out of sub-folders (preview first: this flattens folders)
+python main.py --recursive --dry-run
+python main.py --recursive
+
 # Undo the last run (add --dry-run to preview first)
 python main.py --undo
 
@@ -57,6 +62,7 @@ python main.py --path ~/Downloads --log-file ~/organizer.log
 |---|---|---|
 | `--path` | `~/Downloads` | Folder to organize |
 | `--dry-run` | off | Log planned moves without moving anything |
+| `--recursive` | off | Also gather files from sub-folders; empty sub-folders are removed |
 | `--undo` | off | Reverse the most recent run (combine with `--dry-run` to preview) |
 | `--log-file` | `file_automator.log` | Where to write the audit log |
 
