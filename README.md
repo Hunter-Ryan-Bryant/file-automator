@@ -72,12 +72,37 @@ python main.py --path ~/Downloads --log-file ~/organizer.log
 | `--interval` | `5` | Seconds between checks in watch mode |
 | `--undo` | off | Reverse the most recent run (combine with `--dry-run` to preview) |
 | `--log-file` | `file_automator.log` | Where to write the audit log |
+| `--config` | none | JSON file with custom categories (see below) |
 
 Each run records its moves in a hidden `.file_automator_history.json` file inside the organized folder. That file is what `--undo` reads, so don't delete it if you might want to undo. In watch mode, each check that moves files counts as its own run, so `--undo` reverses the most recent batch.
 
 To start watching automatically when you log in, add `python main.py --watch` as a Windows Task Scheduler task with an "At log on" trigger, or as an `@reboot` cron job on macOS/Linux.
 
-To add or change categories, edit the `DIRECTORIES` dictionary at the top of `main.py`.
+## Custom Categories
+
+To add your own folders or change where an extension goes, write a JSON file and pass it with `--config`. You don't need to edit the code. Start from [`categories.example.json`](categories.example.json):
+
+```json
+{
+  "replace_defaults": false,
+  "categories": {
+    "Ebooks": [".epub", ".mobi"],
+    "Photos-RAW": [".cr2", ".nef", ".arw"],
+    "Images": [".avif"]
+  }
+}
+```
+
+```bash
+python main.py --config categories.example.json --dry-run
+```
+
+- **Merged with the defaults:** every extension you list goes to that folder and is taken out of whichever built-in folder had it. The example above adds `Ebooks/` and `Photos-RAW/`, adds `.avif` to `Images/`, and keeps everything else as is.
+- **`"replace_defaults": true`:** uses only your categories. Anything not listed goes to `Others/`.
+- **Extensions are flexible:** `"EPUB"`, `".epub"` and `"epub"` all mean the same thing.
+- **Folder names** must be plain names: no `/`, `\` or `..`, and they can't start with `.`.
+- A config file inside the folder being organized is never moved.
+- A typo in the file gives a clear error with the line and column, and nothing gets moved.
 
 ## Running Tests
 

@@ -1,0 +1,8 @@
+{
+  "replace_defaults": false,
+  "categories": {
+    "Ebooks": [".epub", ".mobi"],
+    "Photos-RAW": [".cr2", ".nef", ".arw"],
+    "Images": [".avif"]
+  }
+}
