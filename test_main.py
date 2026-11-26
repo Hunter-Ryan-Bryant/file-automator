@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from main import get_category, organize_directory, unique_destination
+from main import HISTORY_FILENAME, get_category, organize_directory, undo_last_run, unique_destination
 
 
 def make_files(folder: Path, *names: str) -> None:
@@ -135,3 +135,109 @@ def test_cli_exit_code_is_1_for_missing_folder_or_failed_move(tmp_path, monkeypa
     monkeypatch.setattr("main.shutil.move", refuse)
     monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(target), "--log-file", log])
     assert cli.main() == 1
+
+
+# ---------- undo ----------
+
+def test_undo_restores_files_and_removes_empty_folders(tmp_path):
+    make_files(tmp_path, "photo.png", "resume.pdf")
+    organize_directory(tmp_path)
+
+    summary = undo_last_run(tmp_path)
+
+    assert summary == {"restored": 2, "skipped": 0, "failed": 0}
+    assert (tmp_path / "photo.png").read_text() == "contents of photo.png"
+    assert (tmp_path / "resume.pdf").exists()
+    assert not (tmp_path / "Images").exists()
+    assert not (tmp_path / "Documents").exists()
+    assert not (tmp_path / HISTORY_FILENAME).exists()
+
+
+def test_undo_restores_renamed_collision_to_original_name(tmp_path):
+    docs = tmp_path / "Documents"
+    docs.mkdir()
+    make_files(docs, "report.pdf")
+    make_files(tmp_path, "report.pdf")
+    organize_directory(tmp_path)  # new file becomes Documents/report_1.pdf
+
+    undo_last_run(tmp_path)
+
+    assert (tmp_path / "report.pdf").exists()
+    assert not (docs / "report_1.pdf").exists()
+    assert (docs / "report.pdf").exists()  # the pre-existing file is untouched
+
+
+def test_undo_steps_back_one_run_at_a_time(tmp_path):
+    make_files(tmp_path, "first.png")
+    organize_directory(tmp_path)
+    make_files(tmp_path, "second.png")
+    organize_directory(tmp_path)
+
+    undo_last_run(tmp_path)
+    assert (tmp_path / "second.png").exists()
+    assert (tmp_path / "Images" / "first.png").exists()
+
+    undo_last_run(tmp_path)
+    assert (tmp_path / "first.png").exists()
+    assert not (tmp_path / "Images").exists()
+
+
+def test_undo_with_nothing_to_undo(tmp_path):
+    assert undo_last_run(tmp_path) == {"restored": 0, "skipped": 0, "failed": 0}
+
+
+def test_undo_never_overwrites_and_keeps_entry_for_retry(tmp_path):
+    make_files(tmp_path, "photo.png")
+    organize_directory(tmp_path)
+    (tmp_path / "photo.png").write_text("a new file with the same name")
+
+    summary = undo_last_run(tmp_path)
+
+    assert summary == {"restored": 0, "skipped": 1, "failed": 0}
+    assert (tmp_path / "photo.png").read_text() == "a new file with the same name"
+    assert (tmp_path / "Images" / "photo.png").read_text() == "contents of photo.png"
+    assert (tmp_path / HISTORY_FILENAME).exists()
+
+
+def test_undo_skips_files_moved_away_since(tmp_path):
+    make_files(tmp_path, "photo.png", "notes.txt")
+    organize_directory(tmp_path)
+    (tmp_path / "Images" / "photo.png").unlink()
+
+    summary = undo_last_run(tmp_path)
+
+    assert summary == {"restored": 1, "skipped": 1, "failed": 0}
+    assert (tmp_path / "notes.txt").exists()
+    assert not (tmp_path / HISTORY_FILENAME).exists()
+
+
+def test_undo_dry_run_changes_nothing(tmp_path):
+    make_files(tmp_path, "photo.png")
+    organize_directory(tmp_path)
+
+    summary = undo_last_run(tmp_path, dry_run=True)
+
+    assert summary["restored"] == 1
+    assert (tmp_path / "Images" / "photo.png").exists()
+    assert (tmp_path / HISTORY_FILENAME).exists()
+
+
+def test_dry_run_does_not_record_history(tmp_path):
+    make_files(tmp_path, "photo.png")
+    organize_directory(tmp_path, dry_run=True)
+    assert not (tmp_path / HISTORY_FILENAME).exists()
+
+
+def test_cli_undo(tmp_path, monkeypatch):
+    import sys
+    import main as cli
+
+    make_files(tmp_path, "photo.png")
+    log = str(tmp_path.parent / f"{tmp_path.name}.log")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path), "--log-file", log])
+    assert cli.main() == 0
+    assert (tmp_path / "Images" / "photo.png").exists()
+
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path), "--log-file", log, "--undo"])
+    assert cli.main() == 0
+    assert (tmp_path / "photo.png").exists()
