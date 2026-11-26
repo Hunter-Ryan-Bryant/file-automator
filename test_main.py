@@ -13,6 +13,8 @@ def test_get_category_is_case_insensitive():
     assert get_category(Path("notes.txt")) == "Documents"
     assert get_category(Path("mystery.xyz")) == "Others"
     assert get_category(Path("no_extension")) == "Others"
+    assert get_category(Path("song.MP3")) == "Audio"
+    assert get_category(Path("setup.exe")) == "Installers"
 
 
 def test_files_are_sorted_into_category_folders(tmp_path):
@@ -68,6 +70,17 @@ def test_hidden_files_folders_and_skip_list_are_left_alone(tmp_path):
     assert (tmp_path / "audit.log").exists()
 
 
+def test_in_progress_downloads_are_left_alone(tmp_path):
+    make_files(tmp_path, "movie.mkv.crdownload", "game.zip.part", "installer.tmp")
+
+    summary = organize_directory(tmp_path)
+
+    assert summary == {"moved": 0, "skipped": 3, "failed": 0}
+    assert (tmp_path / "movie.mkv.crdownload").exists()
+    assert (tmp_path / "game.zip.part").exists()
+    assert (tmp_path / "installer.tmp").exists()
+
+
 def test_missing_directory_is_handled(tmp_path):
     summary = organize_directory(tmp_path / "does-not-exist")
     assert summary == {"moved": 0, "skipped": 0, "failed": 0}
@@ -99,6 +112,26 @@ def test_cli_expands_tilde_in_path(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))  # Windows
     monkeypatch.setattr(sys, "argv", ["main.py", "--path", "~/clutter", "--log-file", str(tmp_path / "run.log")])
 
-    cli.main()
+    assert cli.main() == 0
 
     assert (target / "Images" / "photo.png").exists()
+
+
+def test_cli_exit_code_is_1_for_missing_folder_or_failed_move(tmp_path, monkeypatch):
+    import sys
+    import main as cli
+
+    log = str(tmp_path / "run.log")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path / "missing"), "--log-file", log])
+    assert cli.main() == 1
+
+    target = tmp_path / "clutter"
+    target.mkdir()
+    (target / "locked.txt").write_text("x")
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("file is locked")
+
+    monkeypatch.setattr("main.shutil.move", refuse)
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(target), "--log-file", log])
+    assert cli.main() == 1
