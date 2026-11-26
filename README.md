@@ -18,6 +18,7 @@ Downloads/                    Downloads/
 - **No overwrites:** if a file with the same name already exists, the new one is saved as `name_1.ext`, `name_2.ext`, and so on.
 - **Error handling:** locked files or permission errors are logged and counted; the run keeps going instead of crashing.
 - **Dry run:** `--dry-run` shows exactly what would move without touching anything.
+- **Undo:** `--undo` moves the files from the most recent run back where they were. Run it again to step back further. It never overwrites a file, and it removes category folders that end up empty.
 - **Audit log:** every move, skip and failure is written to the console and to `file_automator.log`.
 - **Safe by default:** hidden files, sub-folders, the tool's own log file and in-progress downloads (`.crdownload`, `.part`, `.tmp`, ...) are never moved.
 - **Script-friendly exit code:** exits with `1` if the folder doesn't exist or any file failed to move, `0` otherwise.
@@ -45,6 +46,9 @@ python main.py --dry-run
 # Organize a specific folder
 python main.py --path "C:/Users/me/Desktop/clutter"
 
+# Undo the last run (add --dry-run to preview first)
+python main.py --undo
+
 # Write the audit log somewhere else
 python main.py --path ~/Downloads --log-file ~/organizer.log
 ```
@@ -53,7 +57,10 @@ python main.py --path ~/Downloads --log-file ~/organizer.log
 |---|---|---|
 | `--path` | `~/Downloads` | Folder to organize |
 | `--dry-run` | off | Log planned moves without moving anything |
+| `--undo` | off | Reverse the most recent run (combine with `--dry-run` to preview) |
 | `--log-file` | `file_automator.log` | Where to write the audit log |
+
+Each run records its moves in a hidden `.file_automator_history.json` file inside the organized folder. That file is what `--undo` reads, so don't delete it if you might want to undo.
 
 To add or change categories, edit the `DIRECTORIES` dictionary at the top of `main.py`.
 
