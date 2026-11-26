@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from main import HISTORY_FILENAME, get_category, organize_directory, undo_last_run, unique_destination
 
 
@@ -336,6 +338,132 @@ def test_cli_recursive_flag(tmp_path, monkeypatch):
     make_files(tmp_path / "trip", "photo.png")
     log = str(tmp_path.parent / f"{tmp_path.name}.log")
     monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path), "--log-file", log, "--recursive"])
+
+    assert cli.main() == 0
+    assert (tmp_path / "Images" / "photo.png").exists()
+
+
+# ---------- watch ----------
+
+def make_old(*paths: Path, seconds: float = 3600) -> None:
+    """Backdate files so watch mode treats them as finished writing."""
+    import os
+    import time
+
+    then = time.time() - seconds
+    for path in paths:
+        os.utime(path, (then, then))
+
+
+def test_watch_organizes_files_that_appear_between_checks(tmp_path):
+    from main import watch_directory
+
+    make_files(tmp_path, "first.png")
+    make_old(tmp_path / "first.png")
+
+    def fake_sleep(seconds):
+        make_files(tmp_path, "second.pdf")
+        make_old(tmp_path / "second.pdf")
+
+    totals = watch_directory(tmp_path, interval=1, sleep=fake_sleep, max_cycles=2)
+
+    assert totals == {"moved": 2, "failed": 0, "stopped_early": False}
+    assert (tmp_path / "Images" / "first.png").exists()
+    assert (tmp_path / "Documents" / "second.pdf").exists()
+
+
+def test_recently_modified_files_wait_until_settled(tmp_path):
+    make_files(tmp_path, "copying.mp4")
+
+    summary = organize_directory(tmp_path, min_age=60)
+    assert summary == {"moved": 0, "skipped": 0, "failed": 0}
+    assert (tmp_path / "copying.mp4").exists()
+
+    make_old(tmp_path / "copying.mp4")
+    organize_directory(tmp_path, min_age=60)
+    assert (tmp_path / "Videos" / "copying.mp4").exists()
+
+
+def test_quiet_mode_logs_nothing_when_idle(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="file_automator"):
+        organize_directory(tmp_path, quiet=True)
+
+    assert caplog.records == []
+
+
+def test_each_watch_batch_is_undone_separately(tmp_path):
+    from main import load_history, watch_directory
+
+    make_files(tmp_path, "first.png")
+    make_old(tmp_path / "first.png")
+
+    def fake_sleep(seconds):
+        make_files(tmp_path, "second.png")
+        make_old(tmp_path / "second.png")
+
+    watch_directory(tmp_path, interval=1, sleep=fake_sleep, max_cycles=2)
+    assert len(load_history(tmp_path)) == 2
+
+    undo_last_run(tmp_path)
+
+    assert (tmp_path / "second.png").exists()
+    assert (tmp_path / "Images" / "first.png").exists()
+
+
+def test_watch_stops_if_folder_disappears(tmp_path):
+    import shutil
+    from main import watch_directory
+
+    target = tmp_path / "inbox"
+    target.mkdir()
+
+    totals = watch_directory(target, interval=1, sleep=lambda s: shutil.rmtree(target), max_cycles=5)
+
+    assert totals["stopped_early"] is True
+
+
+def test_watch_stops_cleanly_on_ctrl_c(tmp_path):
+    from main import watch_directory
+
+    def press_ctrl_c(seconds):
+        raise KeyboardInterrupt
+
+    totals = watch_directory(tmp_path, interval=1, sleep=press_ctrl_c)
+
+    assert totals == {"moved": 0, "failed": 0, "stopped_early": False}
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--watch", "--undo"], ["--watch", "--dry-run"], ["--watch", "--interval", "0"]],
+)
+def test_cli_rejects_invalid_watch_options(tmp_path, monkeypatch, extra_args):
+    import sys
+    import main as cli
+
+    log = str(tmp_path.parent / f"{tmp_path.name}.log")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path), "--log-file", log, *extra_args])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+
+
+def test_cli_watch_organizes_then_exits_0_on_ctrl_c(tmp_path, monkeypatch):
+    import sys
+    import main as cli
+
+    make_files(tmp_path, "photo.png")
+    make_old(tmp_path / "photo.png")
+    log = str(tmp_path.parent / f"{tmp_path.name}.log")
+
+    def press_ctrl_c(seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("main.time.sleep", press_ctrl_c)
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path), "--log-file", log, "--watch"])
 
     assert cli.main() == 0
     assert (tmp_path / "Images" / "photo.png").exists()

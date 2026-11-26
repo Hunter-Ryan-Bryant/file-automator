@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import shutil
+import time
 
 logger = logging.getLogger("file_automator")
 
@@ -82,11 +83,25 @@ def save_history(target_dir: Path, runs: list[dict]) -> None:
         logger.warning(f"Could not update undo history {history_file.name}: {error}")
 
 
-def collect_files(target_dir: Path, recursive: bool, skip: frozenset, summary: dict) -> list[Path]:
+def is_settled(item: Path, min_age: float) -> bool:
+    """True if the file hasn't been modified in the last min_age seconds."""
+    if min_age <= 0:
+        return True
+    try:
+        return time.time() - item.stat().st_mtime >= min_age
+    except OSError:
+        return False
+
+
+def collect_files(
+    target_dir: Path, recursive: bool, skip: frozenset, summary: dict, min_age: float = 0
+) -> list[Path]:
     """List the files to organize, counting anything left alone in summary["skipped"].
 
     With recursive=True, sub-folders are searched too, except hidden folders,
     symlinked folders and the top-level category folders (already sorted).
+    Files modified less than min_age seconds ago are left for a later run
+    (they may still be being written) and are not counted as skipped.
     """
     category_names = {name.lower() for name in DIRECTORIES} | {OTHER_CATEGORY.lower()}
     files = []
@@ -110,7 +125,7 @@ def collect_files(target_dir: Path, recursive: bool, skip: frozenset, summary: d
                 visit(item, is_top=False)
             elif should_skip(item, skip):
                 summary["skipped"] += 1
-            else:
+            elif is_settled(item, min_age):
                 files.append(item)
 
     visit(target_dir, is_top=True)
@@ -136,12 +151,19 @@ def remove_emptied_folders(target_dir: Path, moved_files: list[Path]) -> None:
 
 
 def organize_directory(
-    target_dir: Path, dry_run: bool = False, skip: frozenset = frozenset(), recursive: bool = False
+    target_dir: Path,
+    dry_run: bool = False,
+    skip: frozenset = frozenset(),
+    recursive: bool = False,
+    min_age: float = 0,
+    quiet: bool = False,
 ) -> dict:
     """Sort the files inside target_dir into category folders.
 
     With recursive=True, files in sub-folders are gathered into the top-level
     category folders too, and sub-folders left empty are removed.
+    min_age leaves recently modified files for later; quiet=True logs only
+    when something actually moved or failed (used by watch mode).
     Returns a summary: {"moved": int, "skipped": int, "failed": int}.
     With dry_run=True nothing is moved; planned moves are only logged.
     Real moves are recorded in HISTORY_FILENAME so they can be undone.
@@ -154,42 +176,91 @@ def organize_directory(
         logger.error(f"Target directory does not exist or is invalid: {target_dir}")
         return summary
 
-    mode = " (recursive)" if recursive else ""
-    logger.info(f"Starting organization for: {target_dir}{mode}" + (" (dry run)" if dry_run else ""))
+    if not quiet:
+        mode = " (recursive)" if recursive else ""
+        logger.info(f"Starting organization for: {target_dir}{mode}" + (" (dry run)" if dry_run else ""))
 
-    # Collect everything first so files we create or move don't affect the loop.
-    for item in collect_files(target_dir, recursive, skip, summary):
-        category = get_category(item)
-        dest_folder = target_dir / category
-        rel = item.relative_to(target_dir).as_posix()
+    try:
+        # Collect everything first so files we create or move don't affect the loop.
+        for item in collect_files(target_dir, recursive, skip, summary, min_age=min_age):
+            category = get_category(item)
+            dest_folder = target_dir / category
+            rel = item.relative_to(target_dir).as_posix()
 
-        try:
-            dest_path = unique_destination(dest_folder, item.name)
-            if dry_run:
-                logger.info(f"[dry run] Would move: {rel} -> {category}/{dest_path.name}")
-            else:
-                dest_folder.mkdir(exist_ok=True)
-                shutil.move(str(item), str(dest_path))
-                logger.info(f"Moved: {rel} -> {category}/{dest_path.name}")
-                moves.append({"src": rel, "dest": f"{category}/{dest_path.name}"})
-                moved_files.append(item)
-            summary["moved"] += 1
-        except (PermissionError, OSError) as error:
-            logger.warning(f"Could not move {rel}: {error}")
-            summary["failed"] += 1
+            try:
+                dest_path = unique_destination(dest_folder, item.name)
+                if dry_run:
+                    logger.info(f"[dry run] Would move: {rel} -> {category}/{dest_path.name}")
+                else:
+                    dest_folder.mkdir(exist_ok=True)
+                    shutil.move(str(item), str(dest_path))
+                    logger.info(f"Moved: {rel} -> {category}/{dest_path.name}")
+                    moves.append({"src": rel, "dest": f"{category}/{dest_path.name}"})
+                    moved_files.append(item)
+                summary["moved"] += 1
+            except (PermissionError, OSError) as error:
+                logger.warning(f"Could not move {rel}: {error}")
+                summary["failed"] += 1
+    finally:
+        # Runs even on Ctrl+C, so every completed move can still be undone.
+        if moved_files:
+            remove_emptied_folders(target_dir, moved_files)
+        if moves:
+            runs = load_history(target_dir)
+            runs.append({"timestamp": datetime.now().isoformat(timespec="seconds"), "moves": moves})
+            save_history(target_dir, runs)
 
-    if moved_files:
-        remove_emptied_folders(target_dir, moved_files)
-
-    if moves:
-        runs = load_history(target_dir)
-        runs.append({"timestamp": datetime.now().isoformat(timespec="seconds"), "moves": moves})
-        save_history(target_dir, runs)
-
-    logger.info(
-        f"Done. Moved: {summary['moved']}, skipped: {summary['skipped']}, failed: {summary['failed']}"
-    )
+    if not quiet or summary["moved"] or summary["failed"]:
+        logger.info(
+            f"Done. Moved: {summary['moved']}, skipped: {summary['skipped']}, failed: {summary['failed']}"
+        )
     return summary
+
+
+def watch_directory(
+    target_dir: Path,
+    interval: float = 5,
+    skip: frozenset = frozenset(),
+    recursive: bool = False,
+    sleep=None,
+    max_cycles: int | None = None,
+) -> dict:
+    """Organize target_dir now, then again every `interval` seconds until Ctrl+C.
+
+    A file is only moved once it hasn't changed for `interval` seconds, so
+    files that are still being copied or written are left for a later pass.
+    Returns totals: {"moved": int, "failed": int, "stopped_early": bool}.
+    stopped_early is True if the folder disappeared while watching.
+    `sleep` and `max_cycles` exist so tests can run the loop without waiting.
+    """
+    sleep = sleep or time.sleep
+    totals = {"moved": 0, "failed": 0, "stopped_early": False}
+    logger.info(
+        f"Watching {target_dir} every {interval:g}s"
+        + (" (recursive)" if recursive else "")
+        + ". Press Ctrl+C to stop."
+    )
+
+    cycles = 0
+    try:
+        while max_cycles is None or cycles < max_cycles:
+            if not target_dir.is_dir():
+                logger.error(f"Stopped watching: folder is gone or invalid: {target_dir}")
+                totals["stopped_early"] = True
+                break
+            summary = organize_directory(
+                target_dir, skip=skip, recursive=recursive, min_age=interval, quiet=True
+            )
+            totals["moved"] += summary["moved"]
+            totals["failed"] += summary["failed"]
+            cycles += 1
+            if max_cycles is None or cycles < max_cycles:
+                sleep(interval)
+    except KeyboardInterrupt:
+        pass
+
+    logger.info(f"Stopped watching. Moved: {totals['moved']}, failed: {totals['failed']}")
+    return totals
 
 
 def undo_last_run(target_dir: Path, dry_run: bool = False) -> dict:
@@ -306,6 +377,17 @@ def main() -> int:
         help="Move files from the most recent run back to where they were",
     )
     parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Keep running and organize new files as they appear (Ctrl+C to stop)",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=5,
+        help="Seconds between checks in --watch mode (default: 5)",
+    )
+    parser.add_argument(
         "--log-file",
         type=str,
         default="file_automator.log",
@@ -313,18 +395,30 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.watch and args.undo:
+        parser.error("--watch can't be combined with --undo")
+    if args.watch and args.dry_run:
+        parser.error("--watch can't be combined with --dry-run")
+    if args.interval <= 0:
+        parser.error("--interval must be greater than 0")
+
     log_file = Path(args.log_file)
     setup_logging(log_file)
     target_dir = Path(args.path).expanduser()
+    skip = frozenset({log_file.resolve()})  # never sort our own log file
+
+    if args.watch:
+        if not target_dir.is_dir():
+            logger.error(f"Target directory does not exist or is invalid: {target_dir}")
+            return 1
+        totals = watch_directory(target_dir, interval=args.interval, skip=skip, recursive=args.recursive)
+        return 1 if totals["failed"] or totals["stopped_early"] else 0
+
     if args.undo:
         summary = undo_last_run(target_dir, dry_run=args.dry_run)
     else:
-        # Never sort our own log file if it lives inside the target folder.
         summary = organize_directory(
-            target_dir,
-            dry_run=args.dry_run,
-            skip=frozenset({log_file.resolve()}),
-            recursive=args.recursive,
+            target_dir, dry_run=args.dry_run, skip=skip, recursive=args.recursive
         )
 
     if not target_dir.is_dir() or summary["failed"]:
