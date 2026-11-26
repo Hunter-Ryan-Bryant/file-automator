@@ -19,6 +19,7 @@ Downloads/                    Downloads/
 - **Error handling:** locked files or permission errors are logged and counted; the run keeps going instead of crashing.
 - **Dry run:** `--dry-run` shows exactly what would move without touching anything.
 - **Recursive mode:** `--recursive` also gathers files from sub-folders into the top-level category folders, then removes sub-folders left empty. Existing category folders, hidden folders (like `.git`) and symlinked folders are never searched.
+- **Watch mode:** `--watch` keeps running and sorts new files as they arrive, checking every few seconds (`--interval`). A file is only moved once it has stopped changing, so copies still in progress are left alone. Idle checks log nothing.
 - **Undo:** `--undo` moves the files from the most recent run back where they were. Run it again to step back further. It never overwrites a file, and it removes category folders that end up empty.
 - **Audit log:** every move, skip and failure is written to the console and to `file_automator.log`.
 - **Safe by default:** hidden files, sub-folders, the tool's own log file and in-progress downloads (`.crdownload`, `.part`, `.tmp`, ...) are never moved.
@@ -51,6 +52,10 @@ python main.py --path "C:/Users/me/Desktop/clutter"
 python main.py --recursive --dry-run
 python main.py --recursive
 
+# Keep running and sort new files as they arrive (Ctrl+C to stop)
+python main.py --watch
+python main.py --watch --interval 10
+
 # Undo the last run (add --dry-run to preview first)
 python main.py --undo
 
@@ -63,10 +68,14 @@ python main.py --path ~/Downloads --log-file ~/organizer.log
 | `--path` | `~/Downloads` | Folder to organize |
 | `--dry-run` | off | Log planned moves without moving anything |
 | `--recursive` | off | Also gather files from sub-folders; empty sub-folders are removed |
+| `--watch` | off | Keep running and organize new files as they appear |
+| `--interval` | `5` | Seconds between checks in watch mode |
 | `--undo` | off | Reverse the most recent run (combine with `--dry-run` to preview) |
 | `--log-file` | `file_automator.log` | Where to write the audit log |
 
-Each run records its moves in a hidden `.file_automator_history.json` file inside the organized folder. That file is what `--undo` reads, so don't delete it if you might want to undo.
+Each run records its moves in a hidden `.file_automator_history.json` file inside the organized folder. That file is what `--undo` reads, so don't delete it if you might want to undo. In watch mode, each check that moves files counts as its own run, so `--undo` reverses the most recent batch.
+
+To start watching automatically when you log in, add `python main.py --watch` as a Windows Task Scheduler task with an "At log on" trigger, or as an `@reboot` cron job on macOS/Linux.
 
 To add or change categories, edit the `DIRECTORIES` dictionary at the top of `main.py`.
 
