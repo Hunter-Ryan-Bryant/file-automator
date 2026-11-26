@@ -14,12 +14,13 @@ Downloads/                    Downloads/
 
 ## Features
 
-- **Extension mapping:** sorts files into `Images/`, `Documents/`, `Videos/`, `Archives/`, `Code/` and `Others/`. Matching ignores case (`.JPG` = `.jpg`).
+- **Extension mapping:** sorts files into `Images/`, `Documents/`, `Videos/`, `Audio/`, `Archives/`, `Code/`, `Installers/` and `Others/`. Matching ignores case (`.JPG` = `.jpg`).
 - **No overwrites:** if a file with the same name already exists, the new one is saved as `name_1.ext`, `name_2.ext`, and so on.
 - **Error handling:** locked files or permission errors are logged and counted; the run keeps going instead of crashing.
 - **Dry run:** `--dry-run` shows exactly what would move without touching anything.
 - **Audit log:** every move, skip and failure is written to the console and to `file_automator.log`.
-- **Safe by default:** hidden files, sub-folders and the tool's own log file are never moved.
+- **Safe by default:** hidden files, sub-folders, the tool's own log file and in-progress downloads (`.crdownload`, `.part`, `.tmp`, ...) are never moved.
+- **Script-friendly exit code:** exits with `1` if the folder doesn't exist or any file failed to move, `0` otherwise.
 
 ## Tech Stack
 

@@ -6,13 +6,28 @@ import argparse
 logger = logging.getLogger("file_automator")
 
 DIRECTORIES = {
-    "Images": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"},
-    "Documents": {".pdf", ".docx", ".doc", ".txt", ".xlsx", ".csv", ".pptx"},
+    "Images": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".heic", ".bmp"},
+    "Documents": {".pdf", ".docx", ".doc", ".txt", ".md", ".xlsx", ".csv", ".pptx"},
     "Videos": {".mp4", ".mov", ".mkv", ".avi"},
+    "Audio": {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg"},
     "Archives": {".zip", ".tar", ".gz", ".rar", ".7z"},
-    "Code": {".py", ".js", ".html", ".css", ".json", ".cpp"},
+    "Code": {".py", ".js", ".ts", ".html", ".css", ".json", ".cpp"},
+    "Installers": {".exe", ".msi", ".dmg", ".pkg"},
 }
 OTHER_CATEGORY = "Others"
+
+# Downloads that are still in progress. Moving these can break the download.
+PARTIAL_DOWNLOAD_EXTS = {".crdownload", ".part", ".partial", ".download", ".tmp"}
+
+
+def should_skip(item: Path, skip: frozenset) -> bool:
+    """Folders, hidden files, in-progress downloads and explicitly skipped paths stay put."""
+    return (
+        item.is_dir()
+        or item.name.startswith(".")
+        or item.suffix.lower() in PARTIAL_DOWNLOAD_EXTS
+        or item.resolve() in skip
+    )
 
 
 def get_category(file_path: Path) -> str:
@@ -54,7 +69,7 @@ def organize_directory(target_dir: Path, dry_run: bool = False, skip: frozenset 
 
     # Snapshot the listing first so files we create or move don't affect the loop.
     for item in sorted(target_dir.iterdir()):
-        if item.is_dir() or item.name.startswith(".") or item.resolve() in skip:
+        if should_skip(item, skip):
             summary["skipped"] += 1
             continue
 
@@ -93,7 +108,8 @@ def setup_logging(log_file: Path | None) -> None:
     )
 
 
-def main():
+def main() -> int:
+    """Run the CLI. Returns 1 if the folder is invalid or any move failed, else 0."""
     parser = argparse.ArgumentParser(description="Automate organizing files in a directory")
     parser.add_argument(
         "--path",
@@ -116,9 +132,14 @@ def main():
 
     log_file = Path(args.log_file)
     setup_logging(log_file)
+    target_dir = Path(args.path).expanduser()
     # Never sort our own log file if it lives inside the target folder.
-    organize_directory(Path(args.path).expanduser(), dry_run=args.dry_run, skip=frozenset({log_file.resolve()}))
+    summary = organize_directory(target_dir, dry_run=args.dry_run, skip=frozenset({log_file.resolve()}))
+
+    if not target_dir.is_dir() or summary["failed"]:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
