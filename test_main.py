@@ -241,3 +241,101 @@ def test_cli_undo(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path), "--log-file", log, "--undo"])
     assert cli.main() == 0
     assert (tmp_path / "photo.png").exists()
+
+
+# ---------- recursive ----------
+
+def test_non_recursive_leaves_subfolders_alone(tmp_path):
+    (tmp_path / "trip").mkdir()
+    make_files(tmp_path / "trip", "photo.png")
+
+    organize_directory(tmp_path)
+
+    assert (tmp_path / "trip" / "photo.png").exists()
+
+
+def test_recursive_gathers_into_top_level_and_removes_emptied_folders(tmp_path):
+    (tmp_path / "trip" / "day1").mkdir(parents=True)
+    make_files(tmp_path / "trip", "notes.txt")
+    make_files(tmp_path / "trip" / "day1", "photo.png")
+    make_files(tmp_path, "song.mp3")
+
+    summary = organize_directory(tmp_path, recursive=True)
+
+    assert summary == {"moved": 3, "skipped": 0, "failed": 0}
+    assert (tmp_path / "Images" / "photo.png").exists()
+    assert (tmp_path / "Documents" / "notes.txt").exists()
+    assert (tmp_path / "Audio" / "song.mp3").exists()
+    assert not (tmp_path / "trip").exists()
+
+
+def test_recursive_keeps_folders_that_still_have_content_or_were_already_empty(tmp_path):
+    (tmp_path / "project" / ".git").mkdir(parents=True)
+    make_files(tmp_path / "project", "main.py")
+    (tmp_path / "already-empty").mkdir()
+
+    organize_directory(tmp_path, recursive=True)
+
+    assert (tmp_path / "Code" / "main.py").exists()
+    assert (tmp_path / "project" / ".git").is_dir()  # hidden folder is left alone
+    assert (tmp_path / "already-empty").is_dir()
+
+
+def test_recursive_does_not_reorganize_existing_category_folders(tmp_path):
+    (tmp_path / "Images").mkdir()
+    make_files(tmp_path / "Images", "old.txt")  # misfiled by the user, but already "sorted"
+
+    summary = organize_directory(tmp_path, recursive=True)
+
+    assert summary["moved"] == 0
+    assert (tmp_path / "Images" / "old.txt").exists()
+
+
+def test_recursive_name_collisions_across_folders(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    make_files(tmp_path / "a", "photo.png")
+    make_files(tmp_path / "b", "photo.png")
+
+    organize_directory(tmp_path, recursive=True)
+
+    assert sorted(p.name for p in (tmp_path / "Images").iterdir()) == ["photo.png", "photo_1.png"]
+
+
+def test_recursive_dry_run_changes_nothing(tmp_path):
+    (tmp_path / "trip").mkdir()
+    make_files(tmp_path / "trip", "photo.png")
+
+    summary = organize_directory(tmp_path, recursive=True, dry_run=True)
+
+    assert summary["moved"] == 1
+    assert (tmp_path / "trip" / "photo.png").exists()
+    assert not (tmp_path / "Images").exists()
+
+
+def test_undo_after_recursive_recreates_subfolders(tmp_path):
+    (tmp_path / "trip" / "day1").mkdir(parents=True)
+    make_files(tmp_path / "trip" / "day1", "photo.png")
+    make_files(tmp_path / "trip", "notes.txt")
+    organize_directory(tmp_path, recursive=True)
+    assert not (tmp_path / "trip").exists()
+
+    summary = undo_last_run(tmp_path)
+
+    assert summary == {"restored": 2, "skipped": 0, "failed": 0}
+    assert (tmp_path / "trip" / "day1" / "photo.png").read_text() == "contents of photo.png"
+    assert (tmp_path / "trip" / "notes.txt").exists()
+    assert not (tmp_path / "Images").exists()
+
+
+def test_cli_recursive_flag(tmp_path, monkeypatch):
+    import sys
+    import main as cli
+
+    (tmp_path / "trip").mkdir()
+    make_files(tmp_path / "trip", "photo.png")
+    log = str(tmp_path.parent / f"{tmp_path.name}.log")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path), "--log-file", log, "--recursive"])
+
+    assert cli.main() == 0
+    assert (tmp_path / "Images" / "photo.png").exists()
