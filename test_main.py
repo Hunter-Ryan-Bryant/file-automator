@@ -467,3 +467,160 @@ def test_cli_watch_organizes_then_exits_0_on_ctrl_c(tmp_path, monkeypatch):
 
     assert cli.main() == 0
     assert (tmp_path / "Images" / "photo.png").exists()
+
+
+# ---------- config file ----------
+
+def write_config(folder: Path, data) -> Path:
+    import json
+
+    path = folder / "config.json"
+    path.write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_config_adds_new_category_and_keeps_defaults(tmp_path):
+    from main import load_categories
+
+    cats = load_categories(write_config(tmp_path, {"categories": {"Ebooks": [".epub"]}}))
+
+    assert cats["Ebooks"] == {".epub"}
+    assert ".png" in cats["Images"]
+    assert get_category(Path("book.EPUB"), cats) == "Ebooks"
+    assert get_category(Path("photo.png"), cats) == "Images"
+
+
+def test_config_moves_extension_out_of_default_category(tmp_path):
+    from main import load_categories
+
+    cats = load_categories(write_config(tmp_path, {"categories": {"Screenshots": [".png"]}}))
+
+    assert ".png" not in cats["Images"]
+    assert get_category(Path("shot.png"), cats) == "Screenshots"
+    assert get_category(Path("photo.jpg"), cats) == "Images"
+
+
+def test_config_replace_defaults(tmp_path):
+    from main import load_categories
+
+    cats = load_categories(
+        write_config(tmp_path, {"replace_defaults": True, "categories": {"Ebooks": [".epub"]}})
+    )
+
+    assert cats == {"Ebooks": {".epub"}}
+    assert get_category(Path("resume.pdf"), cats) == "Others"
+
+
+def test_config_replace_defaults_with_no_categories_sends_everything_to_others(tmp_path):
+    from main import load_categories
+
+    cats = load_categories(write_config(tmp_path, {"replace_defaults": True}))
+
+    assert cats == {}
+    assert get_category(Path("photo.png"), cats) == "Others"
+
+
+def test_config_normalizes_extensions(tmp_path):
+    from main import load_categories
+
+    cats = load_categories(write_config(tmp_path, {"categories": {"Raw": ["RAW", ".Raw", " raw "]}}))
+
+    assert cats["Raw"] == {".raw"}
+
+
+def test_config_name_matches_default_case_insensitively(tmp_path):
+    from main import load_categories
+
+    cats = load_categories(write_config(tmp_path, {"categories": {"images": [".avif"]}}))
+
+    assert "images" not in cats
+    assert ".avif" in cats["Images"]
+
+
+@pytest.mark.parametrize(
+    "data, message",
+    [
+        ("{not json", "isn't valid JSON (line 1"),
+        ("[1, 2]", "must be a JSON object"),
+        ({"categories": ["Ebooks"]}, '"categories" must be an object'),
+        ({"categories": {"Ebooks": ".epub"}}, "must be a list of extensions"),
+        ({"categories": {"Ebooks": [1]}}, "must be a list of extensions"),
+        ({"categories": {".hidden": [".x"]}}, 'can\'t start with "."'),
+        ({"categories": {"a/b": [".x"]}}, "plain folder name"),
+        ({"categories": {"..": [".x"]}}, 'can\'t start with "."'),
+        ({"categories": {"a\\b": [".x"]}}, "plain folder name"),
+        ({"categories": {"  ": [".x"]}}, "can't be empty"),
+        ({"categories": {"Ebooks": ["."]}}, "empty extension"),
+        ({"replace_defaults": "yes"}, '"replace_defaults" must be true or false'),
+    ],
+)
+def test_config_errors_are_clear(tmp_path, data, message):
+    from main import ConfigError, load_categories
+
+    with pytest.raises(ConfigError) as exc:
+        load_categories(write_config(tmp_path, data))
+    assert message in str(exc.value)
+
+
+def test_config_missing_file(tmp_path):
+    from main import ConfigError, load_categories
+
+    with pytest.raises(ConfigError, match="not found"):
+        load_categories(tmp_path / "nope.json")
+
+
+def test_organize_with_custom_categories(tmp_path):
+    cats = {"Ebooks": {".epub"}}
+    make_files(tmp_path, "book.epub", "photo.png")
+
+    organize_directory(tmp_path, categories=cats)
+
+    assert (tmp_path / "Ebooks" / "book.epub").exists()
+    assert (tmp_path / "Others" / "photo.png").exists()  # only the given categories apply
+
+
+def test_recursive_does_not_search_custom_category_folders(tmp_path):
+    cats = {"Ebooks": {".epub"}}
+    (tmp_path / "Ebooks").mkdir()
+    make_files(tmp_path / "Ebooks", "notes.txt")
+
+    summary = organize_directory(tmp_path, recursive=True, categories=cats)
+
+    assert summary["moved"] == 0
+    assert (tmp_path / "Ebooks" / "notes.txt").exists()
+
+
+def test_example_config_loads():
+    from main import load_categories
+
+    cats = load_categories(Path(__file__).resolve().parent / "categories.example.json")
+
+    assert get_category(Path("book.epub"), cats) == "Ebooks"
+    assert get_category(Path("photo.avif"), cats) == "Images"
+
+
+def test_cli_config_end_to_end_and_config_file_is_not_sorted(tmp_path, monkeypatch):
+    import sys
+    import main as cli
+
+    make_files(tmp_path, "book.epub")
+    config = write_config(tmp_path, {"categories": {"Ebooks": [".epub"]}})  # lives in the target folder
+    log = str(tmp_path.parent / f"{tmp_path.name}.log")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path), "--log-file", log, "--config", str(config)])
+
+    assert cli.main() == 0
+    assert (tmp_path / "Ebooks" / "book.epub").exists()
+    assert config.exists()  # not moved into Code/
+
+
+def test_cli_bad_config_exits_1_and_moves_nothing(tmp_path, monkeypatch):
+    import sys
+    import main as cli
+
+    make_files(tmp_path, "photo.png")
+    config = write_config(tmp_path.parent, "{broken")
+    log = str(tmp_path.parent / f"{tmp_path.name}.log")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--path", str(tmp_path), "--log-file", log, "--config", str(config)])
+
+    assert cli.main() == 1
+    assert (tmp_path / "photo.png").exists()

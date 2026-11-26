@@ -36,10 +36,85 @@ def should_skip(item: Path, skip: frozenset) -> bool:
     )
 
 
-def get_category(file_path: Path) -> str:
+class ConfigError(ValueError):
+    """The --config file is missing, isn't valid JSON, or has the wrong shape."""
+
+
+def _normalize_extension(raw: str, category: str) -> str:
+    ext = raw.strip().lower()
+    if not ext.startswith("."):
+        ext = "." + ext
+    if ext == ".":
+        raise ConfigError(f'Category "{category}" has an empty extension')
+    return ext
+
+
+def _validate_category_name(name: str) -> str:
+    cleaned = name.strip()
+    if not cleaned:
+        raise ConfigError("Category names can't be empty")
+    if cleaned.startswith("."):
+        raise ConfigError(f'Category "{name}" can\'t start with "." (hidden folders are skipped)')
+    if "/" in cleaned or "\\" in cleaned or ".." in cleaned:
+        raise ConfigError(f'Category "{name}" must be a plain folder name (no "/", "\\" or "..")')
+    return cleaned
+
+
+def load_categories(config_path: Path) -> dict[str, set[str]]:
+    """Read a JSON config and return the categories to use.
+
+    Format:
+        {"replace_defaults": false, "categories": {"Ebooks": [".epub", ".mobi"]}}
+
+    By default the config is merged into DIRECTORIES: every extension it lists
+    goes to that folder and is taken out of any other folder. With
+    "replace_defaults": true, only the config's categories are used.
+    Raises ConfigError with a readable message if anything is wrong.
+    """
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ConfigError(f"Config file not found: {config_path}") from None
+    except json.JSONDecodeError as error:
+        raise ConfigError(
+            f"Config file {config_path} isn't valid JSON (line {error.lineno}, column {error.colno}): {error.msg}"
+        ) from None
+    except OSError as error:
+        raise ConfigError(f"Could not read config file {config_path}: {error}") from None
+
+    if not isinstance(data, dict):
+        raise ConfigError('Config must be a JSON object like {"categories": {...}}')
+
+    replace = data.get("replace_defaults", False)
+    if not isinstance(replace, bool):
+        raise ConfigError('"replace_defaults" must be true or false')
+
+    user_categories = data.get("categories", {})
+    if not isinstance(user_categories, dict):
+        raise ConfigError('"categories" must be an object like {"Ebooks": [".epub"]}')
+
+    categories = {} if replace else {name: set(exts) for name, exts in DIRECTORIES.items()}
+    existing_names = {name.lower(): name for name in categories}
+
+    for raw_name, raw_exts in user_categories.items():
+        name = _validate_category_name(raw_name)
+        name = existing_names.get(name.lower(), name)  # "images" -> "Images"
+        if not isinstance(raw_exts, list) or not all(isinstance(e, str) for e in raw_exts):
+            raise ConfigError(f'Category "{name}" must be a list of extensions like [".epub", ".mobi"]')
+
+        exts = {_normalize_extension(e, name) for e in raw_exts}
+        for other in categories.values():
+            other -= exts  # an extension belongs to exactly one folder
+        categories.setdefault(name, set()).update(exts)
+        existing_names[name.lower()] = name
+
+    return {name: exts for name, exts in categories.items() if exts}
+
+
+def get_category(file_path: Path, categories: dict | None = None) -> str:
     """Return the folder name a file belongs in, based on its extension."""
     file_ext = file_path.suffix.lower()
-    for category, extensions in DIRECTORIES.items():
+    for category, extensions in (DIRECTORIES if categories is None else categories).items():
         if file_ext in extensions:
             return category
     return OTHER_CATEGORY
@@ -94,7 +169,12 @@ def is_settled(item: Path, min_age: float) -> bool:
 
 
 def collect_files(
-    target_dir: Path, recursive: bool, skip: frozenset, summary: dict, min_age: float = 0
+    target_dir: Path,
+    recursive: bool,
+    skip: frozenset,
+    summary: dict,
+    min_age: float = 0,
+    categories: dict | None = None,
 ) -> list[Path]:
     """List the files to organize, counting anything left alone in summary["skipped"].
 
@@ -103,7 +183,8 @@ def collect_files(
     Files modified less than min_age seconds ago are left for a later run
     (they may still be being written) and are not counted as skipped.
     """
-    category_names = {name.lower() for name in DIRECTORIES} | {OTHER_CATEGORY.lower()}
+    active = DIRECTORIES if categories is None else categories
+    category_names = {name.lower() for name in active} | {OTHER_CATEGORY.lower()}
     files = []
 
     def visit(folder: Path, is_top: bool) -> None:
@@ -157,8 +238,12 @@ def organize_directory(
     recursive: bool = False,
     min_age: float = 0,
     quiet: bool = False,
+    categories: dict | None = None,
 ) -> dict:
     """Sort the files inside target_dir into category folders.
+
+    categories maps folder names to extensions (see load_categories);
+    None means the built-in DIRECTORIES.
 
     With recursive=True, files in sub-folders are gathered into the top-level
     category folders too, and sub-folders left empty are removed.
@@ -182,8 +267,8 @@ def organize_directory(
 
     try:
         # Collect everything first so files we create or move don't affect the loop.
-        for item in collect_files(target_dir, recursive, skip, summary, min_age=min_age):
-            category = get_category(item)
+        for item in collect_files(target_dir, recursive, skip, summary, min_age=min_age, categories=categories):
+            category = get_category(item, categories)
             dest_folder = target_dir / category
             rel = item.relative_to(target_dir).as_posix()
 
@@ -224,6 +309,7 @@ def watch_directory(
     recursive: bool = False,
     sleep=None,
     max_cycles: int | None = None,
+    categories: dict | None = None,
 ) -> dict:
     """Organize target_dir now, then again every `interval` seconds until Ctrl+C.
 
@@ -249,7 +335,12 @@ def watch_directory(
                 totals["stopped_early"] = True
                 break
             summary = organize_directory(
-                target_dir, skip=skip, recursive=recursive, min_age=interval, quiet=True
+                target_dir,
+                skip=skip,
+                recursive=recursive,
+                min_age=interval,
+                quiet=True,
+                categories=categories,
             )
             totals["moved"] += summary["moved"]
             totals["failed"] += summary["failed"]
@@ -393,6 +484,11 @@ def main() -> int:
         default="file_automator.log",
         help="Where to write the audit log (default: file_automator.log in the current folder)",
     )
+    parser.add_argument(
+        "--config",
+        type=str,
+        help="JSON file with custom categories (see categories.example.json)",
+    )
     args = parser.parse_args()
 
     if args.watch and args.undo:
@@ -405,20 +501,42 @@ def main() -> int:
     log_file = Path(args.log_file)
     setup_logging(log_file)
     target_dir = Path(args.path).expanduser()
-    skip = frozenset({log_file.resolve()})  # never sort our own log file
+    skip = {log_file.resolve()}  # never sort our own log file
+
+    categories = None
+    if args.config and not args.undo:  # undo reads the history, not categories
+        config_path = Path(args.config).expanduser()
+        try:
+            categories = load_categories(config_path)
+        except ConfigError as error:
+            logger.error(error)
+            return 1
+        logger.info(f"Using categories from {config_path}")
+        skip.add(config_path.resolve())  # don't sort the config file itself
+    skip = frozenset(skip)
 
     if args.watch:
         if not target_dir.is_dir():
             logger.error(f"Target directory does not exist or is invalid: {target_dir}")
             return 1
-        totals = watch_directory(target_dir, interval=args.interval, skip=skip, recursive=args.recursive)
+        totals = watch_directory(
+            target_dir,
+            interval=args.interval,
+            skip=skip,
+            recursive=args.recursive,
+            categories=categories,
+        )
         return 1 if totals["failed"] or totals["stopped_early"] else 0
 
     if args.undo:
         summary = undo_last_run(target_dir, dry_run=args.dry_run)
     else:
         summary = organize_directory(
-            target_dir, dry_run=args.dry_run, skip=skip, recursive=args.recursive
+            target_dir,
+            dry_run=args.dry_run,
+            skip=skip,
+            recursive=args.recursive,
+            categories=categories,
         )
 
     if not target_dir.is_dir() or summary["failed"]:
